@@ -44,6 +44,8 @@ app.post('/subscribe', (req, res) => {
   res.status(201).json({ message: 'Subscribed successfully' });
 });
 
+
+
 // Endpoint to unsubscribe
 app.post('/unsubscribe', (req, res) => {
   const { endpoint } = req.body;
@@ -73,6 +75,20 @@ app.post('/send-test', (req, res) => {
   Promise.all(pushPromises)
     .then(() => res.status(200).json({ message: `Attempted to send to ${subscriptions.length} clients` }))
     .catch(err => res.status(500).json({ error: err.message }));
+});
+
+// Root route (important for uptime monitoring)
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "push-backend",
+    time: new Date().toISOString()
+  });
+});
+
+// Health route (even better for monitoring)
+app.get('/health', (req, res) => {
+  res.status(200).send("OK");
 });
 
 const PORT = process.env.PORT || 3000;
