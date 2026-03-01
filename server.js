@@ -5,7 +5,6 @@ const cors = require('cors');
 const path = require('path');
 const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
-const fs = require('fs');
 
 const app = express();
 
@@ -20,12 +19,10 @@ app.use((req, res, next) => {
 
 // Configure web-push
 webpush.setVapidDetails(
-  'mailto:your-email@example.com',
+  `mailto:${process.env.VAPID_EMAIL || 'your-email@example.com'}`,
   process.env.VAPID_PUBLIC_KEY,
   process.env.VAPID_PRIVATE_KEY
 );
-
-const SUBSCRIPTIONS_FILE = path.join(__dirname, 'subscriptions.json');
 
 // Initialize Supabase
 const supabase = createClient(
@@ -33,36 +30,24 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// Helper to load subscriptions
-function loadSubscriptions() {
+// Load subscriptions from Supabase
+async function getSubscriptions() {
   try {
-    if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
-      return JSON.parse(fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf8'));
-    }
+    const { data, error } = await supabase
+      .from('push_subscriptions')
+      .select('subscription_json');
+    
+    if (error) throw error;
+    return data.map(item => item.subscription_json);
   } catch (err) {
-    console.error('Error loading subscriptions:', err);
-  }
-  return [];
-}
-
-// Helper to save subscriptions
-function saveSubscriptions(subs) {
-  try {
-    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(subs, null, 2));
-  } catch (err) {
-    console.error('Error saving subscriptions:', err);
+    console.error('Error loading subscriptions from Supabase:', err);
+    return [];
   }
 }
-
-let subscriptions = loadSubscriptions();
 
 // Function to calculate daily and monthly totals from Supabase
 async function getExpenseSummary() {
   const now = new Date();
-  
-  // Use IST timezone for date calculations if possible, 
-  // or just rely on the fact that YYYY-MM-DD is consistent.
-  // For now, let's use a more robust way to get local YYYY-MM and YYYY-MM-DD
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
@@ -73,7 +58,6 @@ async function getExpenseSummary() {
   console.log(`Calculating summary for Today: ${today}, Month: ${currentMonth}`);
 
   try {
-    // Fetch all expenses for the current month to be safe
     const { data: expenses, error } = await supabase
       .from('expenses')
       .select('amount, date, expense_type')
@@ -82,8 +66,6 @@ async function getExpenseSummary() {
 
     if (error) throw error;
 
-    console.log(`Fetched ${expenses?.length || 0} expenses for the month.`);
-
     const todayTotal = expenses
       .filter(exp => exp.date.startsWith(today))
       .reduce((sum, exp) => sum + exp.amount, 0);
@@ -91,8 +73,6 @@ async function getExpenseSummary() {
     const monthTotal = expenses
       .filter(exp => exp.date.startsWith(currentMonth))
       .reduce((sum, exp) => sum + exp.amount, 0);
-
-    console.log(`Results - Today: ${todayTotal}, Month: ${monthTotal}`);
 
     return { todayTotal, monthTotal };
   } catch (err) {
@@ -103,18 +83,24 @@ async function getExpenseSummary() {
 
 // Function to send notifications to all subscribers
 async function sendNotificationToAll(title, body) {
+  const currentSubscriptions = await getSubscriptions();
+  console.log(`Sending notification to ${currentSubscriptions.length} subscribers`);
+
   const notificationPayload = JSON.stringify({
     title,
     body,
     url: '/'
   });
 
-  const pushPromises = subscriptions.map(sub => 
-    webpush.sendNotification(sub, notificationPayload).catch(err => {
-      console.error('Error sending notification:', err);
+  const pushPromises = currentSubscriptions.map(sub => 
+    webpush.sendNotification(sub, notificationPayload).catch(async err => {
+      console.error('Error sending notification:', err.statusCode);
       if (err.statusCode === 410 || err.statusCode === 404) { // Subscription expired or removed
-        subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
-        saveSubscriptions(subscriptions);
+        console.log('Removing expired subscription:', sub.endpoint);
+        await supabase
+          .from('push_subscriptions')
+          .delete()
+          .eq('endpoint', sub.endpoint);
       }
     })
   );
@@ -152,35 +138,46 @@ cron.schedule('0 22 * * *', async () => {
 });
 
 // Endpoint to subscribe a new device
-app.post('/subscribe', (req, res) => {
+app.post('/subscribe', async (req, res) => {
   console.log('Received subscription request');
   const { subscription } = req.body;
-  if (!subscription) {
-    console.error('Subscription body missing!');
-    return res.status(400).json({ error: 'Subscription missing' });
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: 'Subscription or endpoint missing' });
   }
 
-  console.log('Subscription endpoint:', subscription.endpoint);
+  try {
+    const { error } = await supabase
+      .from('push_subscriptions')
+      .upsert({ 
+        endpoint: subscription.endpoint, 
+        subscription_json: subscription 
+      }, { onConflict: 'endpoint' });
 
-  // Check if subscription already exists
-  const existingSub = subscriptions.find(s => s.endpoint === subscription.endpoint);
-  if (!existingSub) {
-    subscriptions.push(subscription);
-    saveSubscriptions(subscriptions);
-    console.log('New subscription saved. Total:', subscriptions.length);
-  } else {
-    console.log('Subscription already exists.');
+    if (error) throw error;
+    
+    console.log('Subscription saved to Supabase');
+    res.status(201).json({ message: 'Subscribed successfully' });
+  } catch (err) {
+    console.error('Error saving subscription:', err);
+    res.status(500).json({ error: 'Failed to save subscription' });
   }
-
-  res.status(201).json({ message: 'Subscribed successfully' });
 });
 
 // Endpoint to unsubscribe
-app.post('/unsubscribe', (req, res) => {
+app.post('/unsubscribe', async (req, res) => {
   const { endpoint } = req.body;
-  subscriptions = subscriptions.filter(sub => sub.endpoint !== endpoint);
-  saveSubscriptions(subscriptions);
-  res.status(200).json({ message: 'Unsubscribed successfully' });
+  try {
+    const { error } = await supabase
+      .from('push_subscriptions')
+      .delete()
+      .eq('endpoint', endpoint);
+    
+    if (error) throw error;
+    res.status(200).json({ message: 'Unsubscribed successfully' });
+  } catch (err) {
+    console.error('Error unsubscribing:', err);
+    res.status(500).json({ error: 'Failed to unsubscribe' });
+  }
 });
 
 // Function to calculate monthly summary from Supabase
@@ -195,14 +192,6 @@ async function getMonthlySummary() {
   const lastMonthStr = `${year}-${String(lastMonth + 1).padStart(2, '0')}`;
 
   try {
-    const { data: expenses, error: expError } = await supabase
-      .from('expenses')
-      .select('amount, date, expense_type')
-      .eq('date', lastMonthStr) // This is simplified, usually you'd filter by month/year parts
-      .neq('expense_type', 'income');
-
-    // Better way to filter by month in Supabase would be date strings or specialized functions
-    // Re-fetching all and filtering in JS for simplicity like frontend
     const { data: allExpenses, error: allExpError } = await supabase
       .from('expenses')
       .select('amount, date, expense_type')
@@ -272,13 +261,13 @@ app.post('/send-test', async (req, res) => {
     const finalBody = body || `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`;
 
     await sendNotificationToAll(finalTitle, finalBody);
-    res.status(200).json({ message: `Attempted to send to ${subscriptions.length} clients` });
+    res.status(200).json({ message: 'Test notification initiated' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Root route (important for uptime monitoring)
+// Root route
 app.get('/', (req, res) => {
   res.status(200).json({
     status: "ok",
@@ -287,12 +276,12 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health route (even better for monitoring)
+// Health route
 app.get('/health', (req, res) => {
   res.status(200).send("OK");
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Push server running on http://localhost:${PORT}`);
+  console.log(`Push server running on PORT ${PORT}`);
 });
