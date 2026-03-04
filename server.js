@@ -124,8 +124,13 @@ cron.schedule('0 */2 * * *', async () => {
 });
 
 // Endpoint to trigger daily summary (used by external cron)
-app.post('/send-daily-summary', async (req, res) => {
-  console.log('Received request for daily summary trigger');
+// Supports both GET (for easy testing) and POST (for cron jobs)
+app.all('/send-daily-summary', async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  
+  console.log(`Received ${req.method} request for daily summary trigger`);
   try {
     const { todayTotal, monthTotal } = await getExpenseSummary();
     const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
