@@ -109,23 +109,9 @@ async function sendNotificationToAll(title, body) {
 }
 
 // Schedule tasks
-// 8 AM Daily
-cron.schedule('0 8 * * *', async () => {
-  console.log('Running 8 AM notification task');
-  const { todayTotal, monthTotal } = await getExpenseSummary();
-  const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
-  
-  await sendNotificationToAll(
-    'Morning Expense Summary',
-    `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`
-  );
-}, {
-  timezone: "Asia/Kolkata"
-});
-
-// 10 PM Daily
-cron.schedule('0 22 * * *', async () => {
-  console.log('Running 10 PM notification task');
+// Every 2 hours
+cron.schedule('0 */2 * * *', async () => {
+  console.log('Running 4-hour notification task');
   const { todayTotal, monthTotal } = await getExpenseSummary();
   const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
   
@@ -135,6 +121,30 @@ cron.schedule('0 22 * * *', async () => {
   );
 }, {
   timezone: "Asia/Kolkata"
+});
+
+// Endpoint to trigger daily summary (used by external cron)
+app.post('/send-daily-summary', async (req, res) => {
+  console.log('Received request for daily summary trigger');
+  try {
+    const { todayTotal, monthTotal } = await getExpenseSummary();
+    const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
+    
+    await sendNotificationToAll(
+      'Daily Expense Summary',
+      `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`
+    );
+    
+    // Return minimal response to avoid "output too large" errors in cron services
+    res.status(200).json({ 
+      status: 'ok', 
+      message: 'Summary notifications sent',
+      time: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Error in /send-daily-summary:', err);
+    res.status(500).json({ status: 'error', message: 'Failed to send notifications' });
+  }
 });
 
 // Endpoint to subscribe a new device
