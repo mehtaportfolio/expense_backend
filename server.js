@@ -3,7 +3,6 @@ const express = require('express');
 const webpush = require('web-push');
 const cors = require('cors');
 const path = require('path');
-const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -13,7 +12,9 @@ app.use(express.json());
 
 // Log all requests for debugging
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  if (!req.url.includes("send-daily-summary")) {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  }
   next();
 });
 
@@ -108,21 +109,6 @@ async function sendNotificationToAll(title, body) {
   await Promise.all(pushPromises);
 }
 
-// Schedule tasks
-// Every 2 hours
-cron.schedule('0 */2 * * *', async () => {
-  console.log('Running 4-hour notification task');
-  const { todayTotal, monthTotal } = await getExpenseSummary();
-  const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
-  
-  await sendNotificationToAll(
-    'Daily Expense Summary',
-    `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`
-  );
-}, {
-  timezone: "Asia/Kolkata"
-});
-
 // Endpoint to trigger daily summary (used by external cron)
 // Supports both GET (for easy testing) and POST (for cron jobs)
 app.all('/send-daily-summary', async (req, res) => {
@@ -130,25 +116,47 @@ app.all('/send-daily-summary', async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
   
-  console.log(`Received ${req.method} request for daily summary trigger`);
   try {
     const { todayTotal, monthTotal } = await getExpenseSummary();
     const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
     
-    await sendNotificationToAll(
-      'Daily Expense Summary',
-      `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`
-    );
-    
-    // Return minimal response to avoid "output too large" errors in cron services
-    res.status(200).json({ 
-      status: 'ok', 
-      message: 'Summary notifications sent',
-      time: new Date().toISOString()
-    });
+const title = 'Daily Expense Summary';
+const body = `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`;
+
+sendNotificationToAll(title, body).catch(console.error);   // run in background
+res.status(200).send("OK");           // respond immediately
   } catch (err) {
     console.error('Error in /send-daily-summary:', err);
     res.status(500).json({ status: 'error', message: 'Failed to send notifications' });
+  }
+});
+
+app.all('/send-monthly-summary', async (req, res) => {
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).send("Method not allowed");
+  }
+  try {
+    const summary = await getMonthlySummary();
+    if (!summary) {
+      return res.status(200).send("No data");
+    }
+
+    const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
+
+    const title = `Monthly Summary - ${summary.monthName}`;
+    const body =
+      `Gross Salary: ${formatCurrency(summary.grossSalary)}\n` +
+      `Total Expenses: ${formatCurrency(summary.expenses)}\n` +
+      `Direct Saving: ${formatCurrency(summary.directSaving)}\n` +
+      `Balance: ${formatCurrency(summary.balanceAmount)}\n` +
+      `Saving %: ${summary.savingPercentage.toFixed(2)}%`;
+
+    sendNotificationToAll(title, body).catch(console.error);
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("Monthly summary error:", err);
+    res.status(500).send("error");
   }
 });
 
@@ -243,26 +251,6 @@ async function getMonthlySummary() {
     return null;
   }
 }
-
-// 9 AM 1st of every month
-cron.schedule('0 9 1 * *', async () => {
-  console.log('Running Monthly summary notification task');
-  const summary = await getMonthlySummary();
-  if (!summary) return;
-
-  const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
-  
-  await sendNotificationToAll(
-    `Monthly Summary - ${summary.monthName}`,
-    `Gross Salary: ${formatCurrency(summary.grossSalary)}\n` +
-    `Total Expenses: ${formatCurrency(summary.expenses)}\n` +
-    `Direct Saving: ${formatCurrency(summary.directSaving)}\n` +
-    `Balance: ${formatCurrency(summary.balanceAmount)}\n` +
-    `Saving %: ${summary.savingPercentage.toFixed(2)}%`
-  );
-}, {
-  timezone: "Asia/Kolkata"
-});
 
 // Endpoint to trigger a test notification (for debugging)
 app.post('/send-test', async (req, res) => {
