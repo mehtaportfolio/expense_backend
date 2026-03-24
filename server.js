@@ -120,11 +120,11 @@ app.all('/send-daily-summary', async (req, res) => {
     const { todayTotal, monthTotal } = await getExpenseSummary();
     const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
     
-const title = 'Daily Expense Summary';
-const body = `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`;
+    const title = 'Daily Expense Summary';
+    const body = `Today's Total: ${formatCurrency(todayTotal)}\nMonth's Total: ${formatCurrency(monthTotal)}`;
 
-sendNotificationToAll(title, body).catch(console.error);   // run in background
-res.status(200).send("OK");           // respond immediately
+    await sendNotificationToAll(title, body);
+    res.status(200).send("OK");
   } catch (err) {
     console.error('Error in /send-daily-summary:', err);
     res.status(500).json({ status: 'error', message: 'Failed to send notifications' });
@@ -144,14 +144,14 @@ app.all('/send-monthly-summary', async (req, res) => {
     const formatCurrency = (val) => `₹${val.toLocaleString('en-IN')}`;
 
     const title = `Monthly Summary - ${summary.monthName}`;
-    const body =
+        const body =
       `Gross Salary: ${formatCurrency(summary.grossSalary)}\n` +
       `Total Expenses: ${formatCurrency(summary.expenses)}\n` +
       `Direct Saving: ${formatCurrency(summary.directSaving)}\n` +
       `Balance: ${formatCurrency(summary.balanceAmount)}\n` +
       `Saving %: ${summary.savingPercentage.toFixed(2)}%`;
 
-    sendNotificationToAll(title, body).catch(console.error);
+    await sendNotificationToAll(title, body);
 
     res.status(200).send("OK");
   } catch (err) {
