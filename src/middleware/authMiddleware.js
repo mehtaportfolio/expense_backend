@@ -6,9 +6,19 @@ const requireAuth = async (req, res, next) => {
     return next();
   }
 
-  // Also skip auth for the verify password and notification endpoints if needed
-  // But strictly, only /api/auth/verify should be public for POST
-  if (req.path === '/auth/verify' || req.path === '/subscribe' || req.path === '/unsubscribe') {
+  // Also skip auth for specific public POST/PUT endpoints
+  const publicPaths = [
+    '/auth/verify',
+    '/subscribe',
+    '/unsubscribe',
+    '/expenses', // Allow adding expenses
+    '/expenses/bulk', // Allow adding bulk expenses
+    '/milk', // Allow milk routes
+    '/milk/fill-zero'
+  ];
+
+  // Check if it's a public path for POST/PUT (but not DELETE)
+  if (req.method !== 'DELETE' && (publicPaths.includes(req.path) || req.path.startsWith('/milk/'))) {
     return next();
   }
 
